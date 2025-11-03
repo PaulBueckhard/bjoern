@@ -1,10 +1,9 @@
-from __future__ import annotations
 import os
 import subprocess
 import shutil
 import tempfile
-from typing import Optional
 from functools import lru_cache
+from typing import Optional
 
 VOICE_MAP = {
     "en": os.path.abspath("tts_models/piper-model-english.onnx"),
@@ -12,50 +11,48 @@ VOICE_MAP = {
 }
 
 PIPER_BIN = os.environ.get("PIPER_BIN", "/usr/bin/piper")
-APLAY_BIN = os.environ.get("APLAY_BIN", "aplay") 
+APLAY_BIN = os.environ.get("APLAY_BIN", "aplay")
+
 
 def _have(cmd: str) -> bool:
-    """Return True if 'cmd' exists on PATH."""
     return bool(shutil.which(cmd))
 
+
 def _voice_for(language: str) -> Optional[str]:
-    """Return model path for a language code like 'en' or 'de'."""
-    lang = (language or "de").split("-")[0].lower()
-    return VOICE_MAP.get(lang)
+    lang = (language or "en").split("-")[0].lower()
+    return VOICE_MAP.get(lang, VOICE_MAP["en"])
+
 
 @lru_cache(maxsize=1)
 def _piper_flag_style() -> str:
     """
-    Detect which CLI flags Piper supports by inspecting `piper --help`.
-    Returns one of: 'short', 'long', or 'unknown'.
+    Detect Piper CLI flags via `piper --help`.
+    Returns 'short' (uses -m/-f) or 'long' (uses --model/--output_file).
+    Defaults to 'short' if detection fails.
     """
     try:
-        proc = subprocess.run(
-            [PIPER_BIN, "--help"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        proc = subprocess.run([PIPER_BIN, "--help"], capture_output=True, text=True, timeout=5)
         text = (proc.stdout or "") + (proc.stderr or "")
         if "-m" in text and "-f" in text:
             return "short"
         if "--model" in text and "--output_file" in text:
             return "long"
-        return "unknown"
     except Exception:
-        return "unknown"
+        pass
+    return "short"
 
-def speak(text: str, language: str = "de") -> bool:
+
+def speak(text: str, language: str = "en") -> bool:
     """
-    Synthesize `text` in the given language and play it via ALSA.
+    Synthesize `text` and play it via ALSA.
     Returns True on success, False otherwise.
     """
     text = (text or "").strip()
     if not text:
-        return True  # nothing to say, not an error
+        return True
 
     if not _have(PIPER_BIN):
-        print(f"[TTS] Piper not found at '{PIPER_BIN}'. Set PIPER_BIN or install Piper TTS.")
+        print(f"[TTS] Piper not found at '{PIPER_BIN}'. Set PIPER_BIN.")
         return False
     if not _have(APLAY_BIN):
         print("[TTS] 'aplay' not found. Install alsa-utils.")
@@ -63,7 +60,7 @@ def speak(text: str, language: str = "de") -> bool:
 
     voice = _voice_for(language)
     if not voice or not os.path.exists(voice):
-        print(f"[TTS] Voice model for '{language}' not found: {voice}")
+        print(f"[TTS] Voice model not found: {voice}")
         return False
 
     cfg = voice + ".json"
@@ -90,33 +87,15 @@ def speak(text: str, language: str = "de") -> bool:
             if use_cfg:
                 cmd += ["-c", cfg]
             proc = run_piper(cmd)
-        elif style == "long":
+        else:
             cmd = [PIPER_BIN, "--model", voice, "--output_file", wav_path]
             if use_cfg:
                 cmd += ["--config", cfg]
             proc = run_piper(cmd)
-        else:
-            # Unknown: try short first, then long
-            cmd_short = [PIPER_BIN, "-m", voice, "-f", wav_path]
-            if use_cfg:
-                cmd_short += ["-c", cfg]
-            try:
-                proc = run_piper(cmd_short)
-                proc.stdin.write(text.encode("utf-8"))
-                proc.stdin.close()
-                proc.wait(timeout=30)
-                if proc.returncode != 0:
-                    raise RuntimeError("short flags failed")
-            except Exception:
-                cmd_long = [PIPER_BIN, "--model", voice, "--output_file", wav_path]
-                if use_cfg:
-                    cmd_long += ["--config", cfg]
-                proc = run_piper(cmd_long)
 
-        if proc.stdin and not proc.stdin.closed:
-            proc.stdin.write(text.encode("utf-8"))
-            proc.stdin.close()
-
+        assert proc.stdin is not None
+        proc.stdin.write(text.encode("utf-8"))
+        proc.stdin.close()
         proc.wait(timeout=40)
 
         if proc.returncode != 0:
@@ -142,11 +121,8 @@ def speak(text: str, language: str = "de") -> bool:
         except Exception:
             pass
 
+
 if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser(description="Piper TTS wrapper")
-    p.add_argument("text", help="Text to speak")
-    p.add_argument("--lang", default="de", help="Language code (de/en)")
-    args = p.parse_args()
-    ok = speak(args.text, args.lang)
+    import sys as _sys
+    ok = speak(" ".join(_sys.argv[1:]) or "Hello from Piper", "en")
     raise SystemExit(0 if ok else 1)
