@@ -1,4 +1,3 @@
-# button_test.py
 from gpiozero import Button
 from signal import pause
 

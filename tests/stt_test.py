@@ -11,8 +11,8 @@ def callback(indata, frames, time, status):
         print(status, file=sys.stderr)
     q.put(bytes(indata))
 
-model_en = vosk.Model("vosk-model-english")
-model_de = vosk.Model("vosk-model-german")
+model_en = vosk.Model("sst_models/vosk-model-english")
+model_de = vosk.Model("sst_models/vosk-model-german")
 
 model = model_de
 samplerate = 16000
