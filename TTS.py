@@ -1,4 +1,6 @@
 import os
+import json
+import socket
 import subprocess
 import shutil
 import tempfile
@@ -13,23 +15,42 @@ VOICE_MAP = {
 PIPER_BIN = os.environ.get("PIPER_BIN", "/usr/bin/piper")
 APLAY_BIN = os.environ.get("APLAY_BIN", "aplay")
 
+DAEMON_HOST = os.environ.get("TTS_DAEMON_HOST", "127.0.0.1")
+DAEMON_PORT = int(os.environ.get("TTS_DAEMON_PORT", "50051"))
+TTS_FORCE_DAEMON = os.environ.get("TTS_FORCE_DAEMON", "0") == "1"
+TTS_DEBUG = os.environ.get("TTS_DEBUG", "0") == "1"
+
+OMP_THREADS = os.environ.get("OMP_NUM_THREADS", "2")
+
+def _daemon_speak(text: str, language: str, timeout: float = 20.0) -> bool:
+    """Send a speak request to the persistent TTS daemon."""
+    try:
+        with socket.create_connection((DAEMON_HOST, DAEMON_PORT), timeout=2.0) as s:
+            payload = json.dumps({"text": text, "language": language}).encode() + b"\n"
+            s.sendall(payload)
+            s.settimeout(timeout)
+            data = b""
+            while b"\n" not in data:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        if not data:
+            return False
+        resp = json.loads(data.decode().strip() or "{}")
+        return bool(resp.get("ok"))
+    except Exception:
+        return False
 
 def _have(cmd: str) -> bool:
     return bool(shutil.which(cmd))
 
-
 def _voice_for(language: str) -> Optional[str]:
     lang = (language or "en").split("-")[0].lower()
-    return VOICE_MAP.get(lang, VOICE_MAP["en"])
-
+    return VOICE_MAP.get(lang) or VOICE_MAP.get("en")
 
 @lru_cache(maxsize=1)
 def _piper_flag_style() -> str:
-    """
-    Detect Piper CLI flags via `piper --help`.
-    Returns 'short' (uses -m/-f) or 'long' (uses --model/--output_file).
-    Defaults to 'short' if detection fails.
-    """
     try:
         proc = subprocess.run([PIPER_BIN, "--help"], capture_output=True, text=True, timeout=5)
         text = (proc.stdout or "") + (proc.stderr or "")
@@ -41,18 +62,24 @@ def _piper_flag_style() -> str:
         pass
     return "short"
 
-
 def speak(text: str, language: str = "en") -> bool:
-    """
-    Synthesize `text` and play it via ALSA.
-    Returns True on success, False otherwise.
-    """
     text = (text or "").strip()
     if not text:
         return True
 
+    # Try daemon first
+    used_daemon = _daemon_speak(text, language)
+    if TTS_DEBUG:
+        print(f"[TTS] daemon={used_daemon} host={DAEMON_HOST} port={DAEMON_PORT}")
+    if TTS_FORCE_DAEMON and not used_daemon:
+        print("[TTS] Daemon required but unavailable.")
+        return False
+    if used_daemon:
+        return True
+
+    # Fallback if daemon not available
     if not _have(PIPER_BIN):
-        print(f"[TTS] Piper not found at '{PIPER_BIN}'. Set PIPER_BIN.")
+        print(f"[TTS] Piper not found at '{PIPER_BIN}'.")
         return False
     if not _have(APLAY_BIN):
         print("[TTS] 'aplay' not found. Install alsa-utils.")
@@ -73,6 +100,10 @@ def speak(text: str, language: str = "en") -> bool:
         style = _piper_flag_style()
         tried_cmds = []
 
+        env = dict(os.environ)
+        for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            env[k] = OMP_THREADS
+
         def run_piper(cmd):
             tried_cmds.append(" ".join(cmd))
             return subprocess.Popen(
@@ -80,19 +111,19 @@ def speak(text: str, language: str = "en") -> bool:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                env=env,
             )
 
         if style == "short":
             cmd = [PIPER_BIN, "-m", voice, "-f", wav_path]
             if use_cfg:
                 cmd += ["-c", cfg]
-            proc = run_piper(cmd)
         else:
             cmd = [PIPER_BIN, "--model", voice, "--output_file", wav_path]
             if use_cfg:
                 cmd += ["--config", cfg]
-            proc = run_piper(cmd)
 
+        proc = run_piper(cmd)
         assert proc.stdin is not None
         proc.stdin.write(text.encode("utf-8"))
         proc.stdin.close()
@@ -116,13 +147,13 @@ def speak(text: str, language: str = "en") -> bool:
         return False
     finally:
         try:
-            if 'wav_path' in locals() and os.path.exists(wav_path):
+            if "wav_path" in locals() and os.path.exists(wav_path):
                 os.remove(wav_path)
         except Exception:
             pass
 
-
+# CLI test
 if __name__ == "__main__":
     import sys as _sys
-    ok = speak(" ".join(_sys.argv[1:]) or "Hello from Piper", "en")
+    ok = speak(" ".join(_sys.argv[1:]) or "Hello from persistent Piper", "en")
     raise SystemExit(0 if ok else 1)
