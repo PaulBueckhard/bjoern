@@ -15,14 +15,30 @@ class SpeechToText:
         samplerate: int = 16000,
         blocksize: int = 8000,
         language: str = "en",
+        device: Optional[int | str] = None,
+        debug: bool = False,
     ):
         self.samplerate = samplerate
         self.blocksize = blocksize
+        self.device = device
+        self.debug = debug
+
         self._model_paths = {"en": model_path_en, "de": model_path_de}
         self._models: dict[str, vosk.Model] = {}
         self._lang = "en"
         self._model: Optional[vosk.Model] = None
         self.set_language(language)
+
+        if self.debug:
+            print("[STT] sounddevice version:", sd.__version__)
+            try:
+                default_in = sd.default.device
+                print("[STT] Default input device:", default_in)
+                if self.device is not None:
+                    info = sd.query_devices(self.device)
+                    print("[STT] Using input device:", info)
+            except Exception as e:
+                print("[STT] Could not query device info:", e)
 
     def _ensure_loaded(self, lang: str) -> vosk.Model:
         if lang not in self._models:
@@ -53,6 +69,10 @@ class SpeechToText:
             if status:
                 print(status, file=sys.stderr)
             q.put(bytes(indata))
+            if self.debug:
+                import numpy as np
+                level = 20 * np.log10(np.max(np.abs(np.frombuffer(indata, dtype="int16"))) / 32768 + 1e-9)
+                print(f"[STT] level ~ {level:.1f} dBFS")
 
         rec = vosk.KaldiRecognizer(self._model, self.samplerate)
 
@@ -62,6 +82,7 @@ class SpeechToText:
                 blocksize=self.blocksize,
                 dtype="int16",
                 channels=1,
+                device=self.device,
                 callback=callback,
             ):
                 while not stop_fn():

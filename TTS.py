@@ -4,6 +4,7 @@ import socket
 import subprocess
 import shutil
 import tempfile
+import re
 from functools import lru_cache
 from typing import Optional
 
@@ -12,7 +13,26 @@ VOICE_MAP = {
     "de": os.path.abspath("tts_models/piper-model-german.onnx"),
 }
 
-PIPER_BIN = os.environ.get("PIPER_BIN", "/usr/bin/piper")
+IS_WINDOWS = (os.name == "nt")
+
+_default_piper_win = r"C:\piper\piper.exe"
+_default_espeak_win = r"C:\piper\espeak-ng-data"
+_default_piper_linux = "/usr/bin/piper"
+
+PIPER_BIN = os.environ.get("PIPER_BIN")
+ESPEAK_DATA = os.environ.get("ESPEAK_DATA")
+
+if not PIPER_BIN:
+    if IS_WINDOWS and os.path.exists(_default_piper_win):
+        PIPER_BIN = _default_piper_win
+        print(f"[TTS] Using default Windows Piper path: {PIPER_BIN}")
+    else:
+        PIPER_BIN = _default_piper_linux
+
+if IS_WINDOWS and not ESPEAK_DATA and os.path.exists(_default_espeak_win):
+    ESPEAK_DATA = _default_espeak_win
+    print(f"[TTS] Using default Windows espeak-ng-data path: {ESPEAK_DATA}")
+
 APLAY_BIN = os.environ.get("APLAY_BIN", "aplay")
 
 DAEMON_HOST = os.environ.get("TTS_DAEMON_HOST", "127.0.0.1")
@@ -22,8 +42,20 @@ TTS_DEBUG = os.environ.get("TTS_DEBUG", "0") == "1"
 
 OMP_THREADS = os.environ.get("OMP_NUM_THREADS", "2")
 
+def _sanitize_text(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"[\r\n\t]+", ". ", text)
+    text = re.sub(r"[^\x20-\x7EäöüÄÖÜßéèêàáâîïôöùüçÇÉÈÊÀÁÂÎÏÔÖÙÜß]", "", text)
+    text = re.sub(r"([!?\.]){2,}", r"\1", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = text.strip(" .!,?\u200b")
+    if text and not text.endswith((".", "!", "?")):
+        text += "."
+    return text.strip()
+
+
 def _daemon_speak(text: str, language: str, timeout: float = 20.0) -> bool:
-    """Send a speak request to the persistent TTS daemon."""
     try:
         with socket.create_connection((DAEMON_HOST, DAEMON_PORT), timeout=2.0) as s:
             payload = json.dumps({"text": text, "language": language}).encode() + b"\n"
@@ -41,6 +73,7 @@ def _daemon_speak(text: str, language: str, timeout: float = 20.0) -> bool:
         return bool(resp.get("ok"))
     except Exception:
         return False
+
 
 def _have(cmd: str) -> bool:
     return bool(shutil.which(cmd))
@@ -67,8 +100,10 @@ def speak(text: str, language: str = "en") -> bool:
     if not text:
         return True
 
+    clean_text = _sanitize_text(text)
+
     # Try daemon first
-    used_daemon = _daemon_speak(text, language)
+    used_daemon = _daemon_speak(clean_text, language)
     if TTS_DEBUG:
         print(f"[TTS] daemon={used_daemon} host={DAEMON_HOST} port={DAEMON_PORT}")
     if TTS_FORCE_DAEMON and not used_daemon:
@@ -81,7 +116,7 @@ def speak(text: str, language: str = "en") -> bool:
     if not _have(PIPER_BIN):
         print(f"[TTS] Piper not found at '{PIPER_BIN}'.")
         return False
-    if not _have(APLAY_BIN):
+    if not IS_WINDOWS and not _have(APLAY_BIN):
         print("[TTS] 'aplay' not found. Install alsa-utils.")
         return False
 
@@ -123,9 +158,20 @@ def speak(text: str, language: str = "en") -> bool:
             if use_cfg:
                 cmd += ["--config", cfg]
 
+        if IS_WINDOWS:
+            cmd += ["--json-input"]
+            if ESPEAK_DATA:
+                cmd += ["--espeak_data", ESPEAK_DATA]
+
         proc = run_piper(cmd)
         assert proc.stdin is not None
-        proc.stdin.write(text.encode("utf-8"))
+
+        if IS_WINDOWS:
+            payload = json.dumps({"text": clean_text}) + "\n"
+            proc.stdin.write(payload.encode("utf-8"))
+        else:
+            proc.stdin.write(clean_text.encode("utf-8"))
+
         proc.stdin.close()
         proc.wait(timeout=40)
 
@@ -135,10 +181,14 @@ def speak(text: str, language: str = "en") -> bool:
             print("[TTS] Tried:", " | ".join(tried_cmds))
             return False
 
-        ap = subprocess.run([APLAY_BIN, "-q", wav_path], capture_output=True)
-        if ap.returncode != 0:
-            print("[TTS] aplay failed:", ap.stderr.decode("utf-8", errors="ignore").strip())
-            return False
+        if IS_WINDOWS:
+            import winsound
+            winsound.PlaySound(wav_path, winsound.SND_FILENAME)
+        else:
+            ap = subprocess.run([APLAY_BIN, "-q", wav_path], capture_output=True)
+            if ap.returncode != 0:
+                print("[TTS] aplay failed:", ap.stderr.decode("utf-8", errors="ignore").strip())
+                return False
 
         return True
 
@@ -152,8 +202,10 @@ def speak(text: str, language: str = "en") -> bool:
         except Exception:
             pass
 
-# CLI test
+
+# -------------------- CLI Test --------------------
+
 if __name__ == "__main__":
     import sys as _sys
-    ok = speak(" ".join(_sys.argv[1:]) or "Hello from persistent Piper", "en")
+    ok = speak(" ".join(_sys.argv[1:]) or "Hello from Piper, running on any system!", "en")
     raise SystemExit(0 if ok else 1)

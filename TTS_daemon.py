@@ -1,25 +1,26 @@
-import os, json, socket, threading, subprocess, time, sys, signal
+import os, json, socket, threading, subprocess, time, sys, signal, shutil
+
+IS_WINDOWS = (os.name == "nt")
 
 HOST = os.environ.get("TTS_DAEMON_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TTS_DAEMON_PORT", "50051"))
 
-PIPER_BIN   = os.environ.get("PIPER_BIN", "/usr/bin/piper")
+_default_piper_win = r"C:\piper\piper.exe"
+_default_espeak_win = r"C:\piper\espeak-ng-data"
+_default_piper_linux = "/usr/bin/piper"
+
+PIPER_BIN = os.environ.get("PIPER_BIN") or (_default_piper_win if IS_WINDOWS else _default_piper_linux)
+ESPEAK_DATA = os.environ.get("ESPEAK_DATA") if IS_WINDOWS else None
+if IS_WINDOWS and not ESPEAK_DATA and os.path.exists(_default_espeak_win):
+    ESPEAK_DATA = _default_espeak_win
+
 APLAY_BIN   = os.environ.get("APLAY_BIN", "aplay")
 ALSA_DEVICE = os.environ.get("ALSA_DEVICE", "default")
 OMP_THREADS = os.environ.get("OMP_NUM_THREADS", "2")
 
-USE_SOX_FADE = os.environ.get("USE_SOX_FADE", "0") == "1"
-FADE_MS = float(os.environ.get("FADE_MS", "12")) / 1000.0  # 12 ms default
-
+USE_SOX_FADE = (os.environ.get("USE_SOX_FADE", "0") == "1") and not IS_WINDOWS
+FADE_MS = float(os.environ.get("FADE_MS", "12")) / 1000.0
 PRESTART_LANG = os.environ.get("PRESTART_LANG", "")
-
-# Sentence pause and speed tuning
-SENTENCE_SILENCE = 0.1
-LENGTH_SCALE = 0.98
-# Keep defaults
-NOISE_SCALE = None   # e.g. 0.667
-NOISE_W     = None   # e.g. 0.8
-
 
 VOICE_MAP = {
     "en": os.path.abspath("tts_models/piper-model-english.onnx"),
@@ -32,7 +33,11 @@ for k in ("OMP_NUM_THREADS","OPENBLAS_NUM_THREADS","MKL_NUM_THREADS","NUMEXPR_NU
 
 _cur_lang = None
 _piper_proc = None
-_player_proc = None
+
+# Windows playback
+_sd_stream = None
+_sd_thread = None
+_stop_feeder = threading.Event()
 _sample_rate = 22050
 
 def _log(*a): print(*a, flush=True)
@@ -55,24 +60,18 @@ def _drain_stderr(tag, proc):
     except Exception:
         pass
 
-def _player_cmd(sample_rate: int):
-    if USE_SOX_FADE:
+def _player_cmd_linux(sample_rate: int):
+    if USE_SOX_FADE and shutil.which("sox"):
         return [
-            "sox",
-            "-t","raw",
-            "-r", str(sample_rate),
-            "-b","16",
-            "-e","signed-integer",
-            "-c","1",
-            "-",
-            "-d",
-            "fade","t", f"{FADE_MS:.03f}"
+            "sox","-t","raw","-r",str(sample_rate),"-b","16","-e","signed-integer","-c","1",
+            "-", "-d", "fade","t", f"{FADE_MS:.03f}"
         ]
     else:
-        return [APLAY_BIN, "-q", "-D", ALSA_DEVICE, "-f", "S16_LE", "-r", str(sample_rate), "-c", "1"]
+        return [APLAY_BIN,"-q","-D",ALSA_DEVICE,"-f","S16_LE","-r",str(sample_rate),"-c","1"]
 
 def _start_pipeline(lang: str) -> bool:
-    global _piper_proc, _player_proc, _cur_lang, _sample_rate
+    global _piper_proc, _cur_lang, _sample_rate, _sd_stream, _sd_thread, _stop_feeder
+
     _stop_pipeline()
 
     model = VOICE_MAP.get(lang)
@@ -82,64 +81,115 @@ def _start_pipeline(lang: str) -> bool:
 
     _sample_rate = _read_sample_rate(model)
 
-    piper_cmd  = [PIPER_BIN, "-m", model, "-c", model + ".json", "--output_raw"]
+    cmd = [PIPER_BIN, "-m", model, "-c", model + ".json", "--output_raw"]
+    if IS_WINDOWS:
+        cmd += ["--json-input"]
+        if ESPEAK_DATA:
+            cmd += ["--espeak_data", ESPEAK_DATA]
 
-    if SENTENCE_SILENCE is not None:
-        piper_cmd += ["--sentence_silence", str(SENTENCE_SILENCE)]
-    if LENGTH_SCALE is not None:
-        piper_cmd += ["--length_scale", str(LENGTH_SCALE)]
-    if NOISE_SCALE is not None:
-        piper_cmd += ["--noise_scale", str(NOISE_SCALE)]
-    if NOISE_W is not None:
-        piper_cmd += ["--noise_w", str(NOISE_W)]
-
-    player_cmd = _player_cmd(_sample_rate)
-    _log("[DAEMON] exec:", " ".join(piper_cmd), "|", " ".join(player_cmd))
+    _log("[DAEMON] exec:", " ".join(cmd) + (" | (player)" if not IS_WINDOWS else ""))
 
     try:
         _piper_proc = subprocess.Popen(
-            piper_cmd,
+            cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=_env,
         )
-        _player_proc = subprocess.Popen(
-            player_cmd,
-            stdin=_piper_proc.stdout,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
+        threading.Thread(target=_drain_stderr, args=("piper", _piper_proc), daemon=True).start()
+
+        if IS_WINDOWS:
+            import sounddevice as sd
+
+            _stop_feeder.clear()
+            _sd_stream = sd.RawOutputStream(
+                samplerate=_sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=2048,
+            )
+            _sd_stream.start()
+
+            def _feeder():
+                try:
+                    while not _stop_feeder.is_set():
+                        chunk = _piper_proc.stdout.read(4096)
+                        if not chunk:
+                            time.sleep(0.002)
+                            continue
+                        _sd_stream.write(chunk)
+                except Exception as e:
+                    _log("[DAEMON] Windows feeder error:", e)
+
+            _sd_thread = threading.Thread(target=_feeder, daemon=True)
+            _sd_thread.start()
+
+        else:
+            player_cmd = _player_cmd_linux(_sample_rate)
+            _player_proc = subprocess.Popen(
+                player_cmd,
+                stdin=_piper_proc.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            threading.Thread(target=_drain_stderr, args=("player", _player_proc), daemon=True).start()
+
         _cur_lang = lang
         _log(f"[DAEMON] Pipeline started for '{lang}' at {_sample_rate} Hz (HOT)")
-
-        threading.Thread(target=_drain_stderr, args=("piper",  _piper_proc), daemon=True).start()
-        threading.Thread(target=_drain_stderr, args=("player", _player_proc), daemon=True).start()
-
         return True
+
     except Exception as e:
         _log("[DAEMON] Failed to start pipeline:", e)
         _stop_pipeline()
         return False
 
 def _stop_pipeline():
-    global _piper_proc, _player_proc, _cur_lang
-    for p in (_player_proc, _piper_proc):
-        if p:
-            try:
-                p.terminate(); p.wait(timeout=1)
-            except Exception:
-                try: p.kill()
-                except Exception: pass
-    _piper_proc = _player_proc = None
+    global _piper_proc, _cur_lang, _sd_stream, _sd_thread, _stop_feeder
+
+    if IS_WINDOWS:
+        try:
+            _stop_feeder.set()
+            if _sd_thread and _sd_thread.is_alive():
+                _sd_thread.join(timeout=0.2)
+        except Exception:
+            pass
+        _sd_thread = None
+        try:
+            if _sd_stream:
+                _sd_stream.stop()
+                _sd_stream.close()
+        except Exception:
+            pass
+        _sd_stream = None
+
+    procs = []
+    try:
+        pass
+    except Exception:
+        pass
+
+    if _piper_proc:
+        try:
+            _piper_proc.terminate(); _piper_proc.wait(timeout=1)
+        except Exception:
+            try: _piper_proc.kill()
+            except Exception: pass
+
+    _piper_proc = None
     _cur_lang = None
 
 def _feed_text(line: str) -> bool:
     if not _piper_proc or _piper_proc.poll() is not None:
         return False
     try:
+        payload = line.strip() + ("\n" if not line.endswith("\n") else "")
         assert _piper_proc.stdin is not None
-        _piper_proc.stdin.write(line.encode("utf-8"))
+        if IS_WINDOWS:
+            data = json.dumps({"text": payload.strip()}) + "\n"
+            _piper_proc.stdin.write(data.encode("utf-8"))
+        else:
+            _piper_proc.stdin.write(payload.encode("utf-8"))
         _piper_proc.stdin.flush()
         return True
     except Exception as e:
@@ -154,7 +204,7 @@ def _speak(text: str, lang: str) -> bool:
     if _cur_lang != lang:
         if not _start_pipeline(lang):
             return False
-    return _feed_text(text.strip() + "\n")
+    return _feed_text(text)
 
 def _handle_conn(conn: socket.socket):
     try:
@@ -182,6 +232,9 @@ def _handle_conn(conn: socket.socket):
         except Exception: pass
 
 def _serve():
+    _log(f"[DAEMON] Piper: {PIPER_BIN}")
+    if IS_WINDOWS and ESPEAK_DATA:
+        _log(f"[DAEMON] eSpeak data: {ESPEAK_DATA}")
     _log(f"[DAEMON] Listening on {HOST}:{PORT}")
     if PRESTART_LANG:
         _start_pipeline(PRESTART_LANG)

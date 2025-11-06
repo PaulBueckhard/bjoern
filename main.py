@@ -1,7 +1,14 @@
+import os
 import time
 import json
 import requests
-import RPi.GPIO as GPIO
+
+try:
+    import RPi.GPIO as GPIO
+    ON_PI = True
+except Exception:
+    GPIO = None
+    ON_PI = False
 
 from STT import SpeechToText
 import TTS
@@ -13,16 +20,54 @@ LOG_PATH = "conversation_log.txt"
 VOSK_MODEL_EN = "sst_models/vosk-model-english"
 VOSK_MODEL_DE = "sst_models/vosk-model-german"
 SAMPLERATE = 16000
-BLOCKSIZE = 8000
+BLOCKSIZE  = 8000
+DEFAULT_STT_DEVICE = None if ON_PI else int(os.getenv("STT_DEVICE", "2"))
 
 
-def _record_on_next_press(stt: SpeechToText) -> str:
-    while GPIO.input(BUTTON_PIN) != GPIO.LOW:
-        time.sleep(0.02)
-    time.sleep(0.03)  # debounce
-    if GPIO.input(BUTTON_PIN) == GPIO.HIGH:
+class Button:
+    def __init__(self, pin: int):
+        self.pin = pin
+        if ON_PI:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        else:
+            import msvcrt
+
+    def is_pressed(self) -> bool:
+        if ON_PI:
+            return GPIO.input(self.pin) == GPIO.LOW
+        else:
+            import ctypes
+            VK_UP = 0x26
+            return bool(ctypes.windll.user32.GetAsyncKeyState(VK_UP) & 0x8000)
+
+    def wait_for_press(self):
+        if ON_PI:
+            while GPIO.input(self.pin) != GPIO.LOW:
+                time.sleep(0.02)
+            time.sleep(0.03)
+        else:
+            print("➡️  Hold the ↑ arrow key to START speaking…")
+            while not self.is_pressed():
+                time.sleep(0.02)
+            print("🎙️  Recording... (release ↑ to stop)")
+
+    def stop_condition(self):
+        if ON_PI:
+            return GPIO.input(self.pin) == GPIO.HIGH
+        else:
+            return not self.is_pressed()
+
+    def cleanup(self):
+        if ON_PI:
+            GPIO.cleanup()
+
+
+def _record_on_next_press(stt: SpeechToText, button: Button) -> str:
+    button.wait_for_press()
+    if ON_PI and not button.is_pressed():
         return ""
-    stop_fn = lambda: GPIO.input(BUTTON_PIN) == GPIO.HIGH
+    stop_fn = button.stop_condition
     return stt.transcribe_until(stop_fn)
 
 
@@ -35,10 +80,10 @@ def _detect_language_word(text: str) -> str:
     return ""
 
 
-def choose_language_via_voice(stt: SpeechToText) -> str:
+def choose_language_via_voice(stt: SpeechToText, button: Button) -> str:
     TTS.speak("Hello! What language should I use: German or English?", "en")
     while True:
-        spoken = _record_on_next_press(stt)
+        spoken = _record_on_next_press(stt, button)
         if not spoken:
             TTS.speak("I didn't hear anything. Please try again and say German or English.", "en")
             continue
@@ -51,7 +96,6 @@ def choose_language_via_voice(stt: SpeechToText) -> str:
             TTS.speak("Okay, dann spreche ich nun Deutsch.", "de")
         else:
             TTS.speak("Okay, I will continue to speak English.", "en")
-
         return lang_choice
 
 
@@ -71,8 +115,7 @@ def send_to_llm(text: str, language: str) -> str:
 
 
 def main():
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    button = Button(BUTTON_PIN)
 
     stt = SpeechToText(
         model_path_en=VOSK_MODEL_EN,
@@ -80,45 +123,33 @@ def main():
         samplerate=SAMPLERATE,
         blocksize=BLOCKSIZE,
         language="en",
+        device=DEFAULT_STT_DEVICE,
     )
 
     print("Starting language setup…")
-    language = choose_language_via_voice(stt)
+    language = choose_language_via_voice(stt, button)
     stt.set_language(language)
-    print(f"Language set to: {language}. Ready. Hold button to record.")
+    print(f"Language set to: {language}. Ready.")
 
     try:
         while True:
-            if GPIO.input(BUTTON_PIN) == GPIO.LOW:
-                time.sleep(0.03)
-                if GPIO.input(BUTTON_PIN) == GPIO.HIGH:
-                    continue
-
-                print("Recording... (release button to stop)")
-                stop_fn = lambda: GPIO.input(BUTTON_PIN) == GPIO.HIGH
-                text = stt.transcribe_until(stop_fn)
-
-                if text:
-                    print(f"You said: {text!r}")
-                    reply = send_to_llm(text, language)
-                    print(f"AI replied: {reply!r}")
-
-                    if reply.strip():
-                        TTS.speak(reply, language=language)
-
-                    with open(LOG_PATH, "a", encoding="utf-8") as f:
-                        f.write(json.dumps({"lang": language, "input": text, "reply": reply}) + "\n")
-
-                else:
-                    print("No speech detected.")
-
-                time.sleep(0.2)
+            print("Hold ↑ arrow key (or button) to talk…")
+            text = _record_on_next_press(stt, button)
+            if text:
+                print(f"You said: {text!r}")
+                reply = send_to_llm(text, language)
+                print(f"AI replied: {reply!r}")
+                if reply.strip():
+                    TTS.speak(reply, language=language)
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"lang": language, "input": text, "reply": reply}) + "\n")
             else:
-                time.sleep(0.05)
+                print("No speech detected.")
+            time.sleep(0.2)
     except KeyboardInterrupt:
         print("\nInterrupted by user, exiting.")
     finally:
-        GPIO.cleanup()
+        button.cleanup()
 
 
 if __name__ == "__main__":
