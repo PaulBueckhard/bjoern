@@ -4,3 +4,5 @@ recordings.txt
 conversation_log.txt
 __pycache__/
 TTS_daemon.log
+session_id.txt
+memory/

@@ -2,6 +2,8 @@ import os
 import time
 import json
 import requests
+from pathlib import Path
+import uuid
 
 try:
     import RPi.GPIO as GPIO
@@ -24,6 +26,17 @@ BLOCKSIZE  = 8000
 DEFAULT_STT_DEVICE = None if ON_PI else int(os.getenv("STT_DEVICE", "2"))
 
 
+def get_session_id() -> str:
+    path = Path("session_id.txt")
+    if path.exists():
+        sid = (path.read_text(encoding="utf-8").strip() or "").strip()
+        if sid:
+            return sid
+    sid = str(uuid.uuid4())
+    path.write_text(sid, encoding="utf-8")
+    return sid
+
+
 class Button:
     def __init__(self, pin: int):
         self.pin = pin
@@ -31,7 +44,7 @@ class Button:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
         else:
-            import msvcrt
+            pass
 
     def is_pressed(self) -> bool:
         if ON_PI:
@@ -99,11 +112,11 @@ def choose_language_via_voice(stt: SpeechToText, button: Button) -> str:
         return lang_choice
 
 
-def send_to_llm(text: str, language: str) -> str:
+def send_to_llm(text: str, language: str, session_id: str) -> str:
     try:
         r = requests.post(
             LLM_SERVER_URL,
-            json={"text": text, "language": language},
+            json={"text": text, "language": language, "session_id": session_id},
             timeout=60
         )
         r.raise_for_status()
@@ -116,6 +129,7 @@ def send_to_llm(text: str, language: str) -> str:
 
 def main():
     button = Button(BUTTON_PIN)
+    session_id = get_session_id()
 
     stt = SpeechToText(
         model_path_en=VOSK_MODEL_EN,
@@ -137,7 +151,7 @@ def main():
             text = _record_on_next_press(stt, button)
             if text:
                 print(f"You said: {text!r}")
-                reply = send_to_llm(text, language)
+                reply = send_to_llm(text, language, session_id)
                 print(f"AI replied: {reply!r}")
                 if reply.strip():
                     TTS.speak(reply, language=language)

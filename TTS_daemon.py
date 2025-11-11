@@ -9,7 +9,7 @@ _default_piper_win = r"C:\piper\piper.exe"
 _default_espeak_win = r"C:\piper\espeak-ng-data"
 _default_piper_linux = "/usr/bin/piper"
 
-PIPER_BIN = os.environ.get("PIPER_BIN") or (_default_piper_win if IS_WINDOWS else _default_piper_linux)
+PIPER_BIN  = os.environ.get("PIPER_BIN") or (_default_piper_win if IS_WINDOWS else _default_piper_linux)
 ESPEAK_DATA = os.environ.get("ESPEAK_DATA") if IS_WINDOWS else None
 if IS_WINDOWS and not ESPEAK_DATA and os.path.exists(_default_espeak_win):
     ESPEAK_DATA = _default_espeak_win
@@ -20,7 +20,10 @@ OMP_THREADS = os.environ.get("OMP_NUM_THREADS", "2")
 
 USE_SOX_FADE = (os.environ.get("USE_SOX_FADE", "0") == "1") and not IS_WINDOWS
 FADE_MS = float(os.environ.get("FADE_MS", "12")) / 1000.0
-PRESTART_LANG = os.environ.get("PRESTART_LANG", "")
+PRESTART_LANG = os.environ.get("PRESTART_LANG", "") 
+
+WIN_OUT_NAME   = os.environ.get("TTS_WIN_OUT", "")
+WIN_OUT_INDEX  = os.environ.get("TTS_WIN_OUT_INDEX", "")
 
 VOICE_MAP = {
     "en": os.path.abspath("tts_models/piper-model-english.onnx"),
@@ -34,11 +37,11 @@ for k in ("OMP_NUM_THREADS","OPENBLAS_NUM_THREADS","MKL_NUM_THREADS","NUMEXPR_NU
 _cur_lang = None
 _piper_proc = None
 
-# Windows playback
-_sd_stream = None
-_sd_thread = None
+_sd_stream = None 
+_sd_thread = None 
 _stop_feeder = threading.Event()
 _sample_rate = 22050
+_sd_device_index = None 
 
 def _log(*a): print(*a, flush=True)
 
@@ -68,6 +71,55 @@ def _player_cmd_linux(sample_rate: int):
         ]
     else:
         return [APLAY_BIN,"-q","-D",ALSA_DEVICE,"-f","S16_LE","-r",str(sample_rate),"-c","1"]
+
+def _pick_windows_output_device():
+    import sounddevice as sd
+    try:
+        devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+    except Exception as e:
+        _log("[DAEMON] sounddevice query failed:", e)
+        return None
+
+    if WIN_OUT_INDEX:
+        try:
+            idx = int(WIN_OUT_INDEX)
+            d = devices[idx]
+            if d.get("max_output_channels",0) > 0:
+                _log(f"[DAEMON] Using explicit output index {idx}: {d['name']}")
+                return idx
+        except Exception as e:
+            _log("[DAEMON] Invalid TTS_WIN_OUT_INDEX:", e)
+
+    cand_by_name = []
+    if WIN_OUT_NAME:
+        for i,d in enumerate(devices):
+            if d.get("max_output_channels",0) > 0 and WIN_OUT_NAME.lower() in d["name"].lower():
+                cand_by_name.append(i)
+        if cand_by_name:
+            idx = cand_by_name[0]
+            _log(f"[DAEMON] Using output by name match [{WIN_OUT_NAME}]: {devices[idx]['name']} (index {idx})")
+            return idx
+
+    wasapi_index = None
+    for i, ha in enumerate(hostapis):
+        if "WASAPI" in ha.get("name","").upper():
+            wasapi_index = i
+            break
+    candidates = []
+    for i, d in enumerate(devices):
+        if d.get("max_output_channels",0) > 0:
+            host_index = d.get("hostapi", -1)
+            candidates.append((i, d["name"], hostapis[host_index]["name"] if 0 <= host_index < len(hostapis) else ""))
+    for i, name, haname in candidates:
+        if "WASAPI" in haname.upper():
+            _log(f"[DAEMON] Selected WASAPI device: {name} (index {i})")
+            return i
+    if candidates:
+        _log(f"[DAEMON] Selected first output device: {candidates[0][1]} (index {candidates[0][0]})")
+        return candidates[0][0]
+    _log("[DAEMON] No output devices available.")
+    return None
 
 def _start_pipeline(lang: str) -> bool:
     global _piper_proc, _cur_lang, _sample_rate, _sd_stream, _sd_thread, _stop_feeder
@@ -102,27 +154,48 @@ def _start_pipeline(lang: str) -> bool:
         if IS_WINDOWS:
             import sounddevice as sd
 
-            _stop_feeder.clear()
-            _sd_stream = sd.RawOutputStream(
-                samplerate=_sample_rate,
-                channels=1,
-                dtype="int16",
-                blocksize=2048,
-            )
-            _sd_stream.start()
+            global _sd_device_index
+            if _sd_device_index is None:
+                _sd_device_index = _pick_windows_output_device()
 
-            def _feeder():
+            _stop_feeder.clear()
+            try:
+                _sd_stream = sd.RawOutputStream(
+                    samplerate=_sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=2048,
+                    device=_sd_device_index,
+                    latency="low",
+                )
+                _sd_stream.start()
+            except Exception as e:
+                _log("[DAEMON] Failed to open Windows audio stream:", e)
+                _sd_stream = None
+
+            def _feeder(local_stream, local_stdout):
                 try:
                     while not _stop_feeder.is_set():
-                        chunk = _piper_proc.stdout.read(4096)
+                        chunk = local_stdout.read(4096)
                         if not chunk:
                             time.sleep(0.002)
                             continue
-                        _sd_stream.write(chunk)
+                        if local_stream is not None:
+                            try:
+                                local_stream.write(chunk)
+                            except Exception as ee:
+                                _log("[DAEMON] Windows feeder write error:", ee)
+                                time.sleep(0.02)
+                        else:
+                            time.sleep(0.01)
                 except Exception as e:
                     _log("[DAEMON] Windows feeder error:", e)
 
-            _sd_thread = threading.Thread(target=_feeder, daemon=True)
+            _sd_thread = threading.Thread(
+                target=_feeder,
+                args=(_sd_stream, _piper_proc.stdout),
+                daemon=True
+            )
             _sd_thread.start()
 
         else:
@@ -151,7 +224,7 @@ def _stop_pipeline():
         try:
             _stop_feeder.set()
             if _sd_thread and _sd_thread.is_alive():
-                _sd_thread.join(timeout=0.2)
+                _sd_thread.join(timeout=0.3)
         except Exception:
             pass
         _sd_thread = None
@@ -163,19 +236,12 @@ def _stop_pipeline():
             pass
         _sd_stream = None
 
-    procs = []
-    try:
-        pass
-    except Exception:
-        pass
-
     if _piper_proc:
         try:
             _piper_proc.terminate(); _piper_proc.wait(timeout=1)
         except Exception:
             try: _piper_proc.kill()
             except Exception: pass
-
     _piper_proc = None
     _cur_lang = None
 
