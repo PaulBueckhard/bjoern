@@ -97,3 +97,15 @@ class SpeechToText:
         except Exception as e:
             print("[STT] Audio error:", e, file=sys.stderr)
             return ""
+
+
+# -------------------- CLI Test --------------------
+
+if __name__ == "__main__":
+    import time
+    print("Initializing STT...")
+    stt = SpeechToText(debug=True)
+    print("Speak for 3 seconds...")
+    t0 = time.time()
+    text = stt.transcribe_until(lambda: time.time() - t0 > 3.0)
+    print("Result:", repr(text))
