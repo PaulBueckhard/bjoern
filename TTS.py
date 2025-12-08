@@ -45,13 +45,31 @@ OMP_THREADS = os.environ.get("OMP_NUM_THREADS", "2")
 def _sanitize_text(text: str) -> str:
     if not text:
         return ""
-    text = re.sub(r"[\r\n\t]+", ". ", text)
-    text = re.sub(r"[^\x20-\x7EäöüÄÖÜßéèêàáâîïôöùüçÇÉÈÊÀÁÂÎÏÔÖÙÜß]", "", text)
-    text = re.sub(r"([!?\.]){2,}", r"\1", text)
+
+    text = text.replace("\r", " ").replace("\n", " ")
+
+    text = re.sub(r"(\*+|_+|`+)", " ", text)
+
+    text = re.sub(r":[A-Za-z0-9_+-]+:", " ", text)
+
+    emoticon_pattern = r"(:\)|:-\)|:\(|:-\(|;\)|;-\)|:D|:-D|:\]|:\[|<3)"
+    text = re.sub(emoticon_pattern, " ", text)
+
+    text = re.sub(r"([!?\.])\1+", r"\1", text)
+
+    text = re.sub(
+        r"[^\x20-\x7EéèêàáâîïôöùüçÇÉÈÊÀÁÂÎÏÔÖÙÜß]",
+        " ",
+        text
+    )
+
     text = re.sub(r"\s{2,}", " ", text)
+
     text = text.strip(" .!,?\u200b")
+
     if text and not text.endswith((".", "!", "?")):
         text += "."
+
     return text.strip()
 
 
