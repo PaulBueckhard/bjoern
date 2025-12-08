@@ -20,89 +20,98 @@ MEM_DIR.mkdir(parents=True, exist_ok=True)
 
 SESSION_MAP_PATH = MEM_DIR / "session_map.json"
 PIN_PATH = MEM_DIR / "pin.json"
+SETTINGS_PATH = MEM_DIR / "settings.json"
 
-SESSIONS = {}
+SESSIONS: dict[str, list[dict]] = {}
 LOCK = threading.Lock()
 
 BLOCKLIST = [
-    "suicide","self harm","kill myself","sex","porn","nsfw","nude",
-    "drugs","cocaine","meth","heroin","weapon","gun","bomb","murder"
+    "suicide", "self harm", "kill myself", "sex", "porn", "nsfw", "nude",
+    "drugs", "cocaine", "meth", "heroin", "weapon", "gun", "bomb", "murder"
 ]
 
 REFUSAL_EN = "I can't talk about that. Let's choose a safer topic."
 REFUSAL_DE = "Darüber kann ich nicht sprechen. Lass uns ein sicheres Thema wählen."
 
-def ensure_ollama_running():
+def ensure_ollama_running() -> bool:
     try:
         requests.get("http://localhost:11434/api/tags", timeout=1)
         return True
-    except:
+    except Exception:
         try:
-            subprocess.Popen([OLLAMA_BIN, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                [OLLAMA_BIN, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             for _ in range(15):
                 try:
                     requests.get("http://localhost:11434/api/tags", timeout=1)
                     return True
-                except:
+                except Exception:
                     time.sleep(1)
-        except:
+        except Exception:
             return False
     return False
 
 
-def _load_json(path, default):
+def _load_json(path: Path, default):
     if not path.exists():
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except:
+    except Exception:
         return default
 
 
-def _save_json(path, data):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def _save_json(path: Path, data):
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
-def load_session_from_disk(session_id):
+def load_session_from_disk(session_id: str) -> list[dict]:
     p = MEM_DIR / f"session_{session_id}.jsonl"
     if not p.exists():
         return []
-    out = []
+    out: list[dict] = []
     with p.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
-                try:
-                    out.append(json.loads(line))
-                except:
-                    pass
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                pass
     return out
 
 
-def append_to_disk(session_id, item):
+def append_to_disk(session_id: str, item: dict):
     p = MEM_DIR / f"session_{session_id}.jsonl"
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
-def get_session(session_id):
+def get_session(session_id: str) -> list[dict]:
     with LOCK:
         if session_id not in SESSIONS:
             SESSIONS[session_id] = load_session_from_disk(session_id)
         return SESSIONS[session_id]
 
 
-def generate_short_id():
+def generate_short_id() -> str:
     alphabet = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(alphabet) for _ in range(6))
+    return "".join(random.choice(alphabet) for _ in range(6))
 
 
-def blocked(text):
+def blocked(text: str) -> bool:
     text = (text or "").lower()
     return any(w in text for w in BLOCKLIST)
 
 
-def persona(lang, user_name):
+def persona(lang: str, user_name: str) -> str:
     name_hint = f" The child's name is {user_name}." if user_name else ""
     if lang.startswith("de"):
         return (
@@ -117,12 +126,12 @@ def persona(lang, user_name):
     )
 
 
-def build_prompt(history, user_text, lang, name):
+def build_prompt(history: list[dict], user_text: str, lang: str, name: str) -> str:
     base = persona(lang, name)
-    out = [base]
+    out: list[str] = [base]
     for turn in history[-MAX_TURNS_PER_SESSION:]:
-        role = "User" if turn["role"] == "user" else "Assistant"
-        out.append(f"{role}: {turn['content']}\n")
+        role = "User" if turn.get("role") == "user" else "Assistant"
+        out.append(f"{role}: {turn.get('content','')}\n")
     out.append(f"User: {user_text}\nAssistant:")
     return "".join(out)
 
@@ -145,12 +154,11 @@ def talk():
     prompt = build_prompt(history, text, lang, user_name)
 
     try:
-        r = requests.post(OLLAMA_URL, json={
-            "model": MODEL,
-            "prompt": prompt,
-            "stream": False
-        }, timeout=120)
-
+        r = requests.post(
+            OLLAMA_URL,
+            json={"model": MODEL, "prompt": prompt, "stream": False},
+            timeout=120,
+        )
         r.raise_for_status()
         reply_raw = (r.json().get("response") or "").strip()
 
@@ -159,9 +167,18 @@ def talk():
         else:
             reply = reply_raw
 
-
-        user_turn = {"role": "user", "content": text, "lang": lang, "ts": time.time()}
-        bot_turn = {"role": "assistant", "content": reply, "lang": lang, "ts": time.time()}
+        user_turn = {
+            "role": "user",
+            "content": text,
+            "lang": lang,
+            "ts": time.time(),
+        }
+        bot_turn = {
+            "role": "assistant",
+            "content": reply,
+            "lang": lang,
+            "ts": time.time(),
+        }
 
         with LOCK:
             history.append(user_turn)
@@ -188,6 +205,7 @@ def create_short_id():
     session_map = _load_json(SESSION_MAP_PATH, {})
     pin_data = _load_json(PIN_PATH, {})
 
+    # Note: this design supports only one PIN globally.
     pin_data["pin"] = parent_pin
     _save_json(PIN_PATH, pin_data)
 
@@ -210,26 +228,37 @@ def api_get_session(short_id):
 
     correct_pin = pin_data.get("pin")
 
+    # Unknown session
     if short_id not in session_map:
-        return jsonify({"error": "invalid session id"}), 404
+        return jsonify({"ok": False, "error": "invalid_session"}), 404
 
+    # Wrong password
     if not correct_pin or pin != correct_pin:
-        return jsonify({"error": "invalid pin"}), 401
+        return jsonify({"ok": False, "error": "invalid_password"}), 401
 
     session_id = session_map[short_id]
     history = load_session_from_disk(session_id)
 
-    safe = [
+    # Load child's name from settings.json (written by main.py)
+    settings = _load_json(SETTINGS_PATH, {})
+    child_name = settings.get("user_name", "Your Child")
+
+    safe_msgs = [
         {
-            "role": item["role"],
-            "content": item["content"],
+            "role": item.get("role"),
+            "content": item.get("content"),
             "ts": item.get("ts"),
-            "lang": item.get("lang")
+            "lang": item.get("lang"),
         }
         for item in history
     ]
 
-    return jsonify(safe)
+    return jsonify({
+        "ok": True,
+        "child_name": child_name,
+        "messages": safe_msgs,
+    })
+
 
 
 @app.route("/api/debug/session_ids")
