@@ -41,7 +41,7 @@ def _detect_language_word(text: str) -> str:
 
 
 def choose_language_via_voice(stt, button):
-    TTS.speak("Hello! What language should I use: German or English?", "en")
+    TTS.speak("Hello! I am Björn! Your personal plushie assistant! Please tell me what language I should use.", "en")
     while True:
         spoken = _record_on_next_press(stt, button)
         lang = _detect_language_word(spoken)
@@ -51,7 +51,7 @@ def choose_language_via_voice(stt, button):
         if lang == "en":
             TTS.speak("Okay, I will continue to speak English.", "en")
             return "en"
-        TTS.speak("Please say German or English.", "en")
+        TTS.speak("Sorry, I didn't understand that. Please say if I should speak english or german.", "en")
 
 
 def _extract_name(text: str) -> str:
@@ -73,9 +73,9 @@ def _extract_name(text: str) -> str:
 
 def ask_user_name(stt, button, lang):
     if lang == "de":
-        TTS.speak("Wie heißt du? Halte die Taste und sag deinen Namen.", "de")
+        TTS.speak("Könntest du mir deinen Namen verraten?", "de")
     else:
-        TTS.speak("What is your name? Hold the button and say your name.", "en")
+        TTS.speak("May I know what your name is?", "en")
 
     for _ in range(3):
         name = _extract_name(_record_on_next_press(stt, button))
@@ -83,11 +83,11 @@ def ask_user_name(stt, button, lang):
             return name
 
         if lang == "de":
-            TTS.speak("Bitte sag nur deinen Vornamen.", "de")
+            TTS.speak("Entschuldige, könntest du das wiederholen? Bitte sag nur deinen Vornamen.", "de")
         else:
-            TTS.speak("Please say only your first name.", "en")
+            TTS.speak("Sorry, could you repeat that. Please just say your first name.", "en")
 
-    return "Freund" if lang == "de" else "Friend"
+    return "mein Freund" if lang == "de" else "my Friend"
 
 
 def ask_user_name_with_confirmation(stt, button, lang):
@@ -95,9 +95,9 @@ def ask_user_name_with_confirmation(stt, button, lang):
         name = ask_user_name(stt, button, lang)
 
         if lang == "de":
-            TTS.speak(f"Heißt du {name}? Ja oder Nein?", "de")
+            TTS.speak(f"Habe ich das richtig verstanden? Dein Name ist {name}?", "de")
         else:
-            TTS.speak(f"Did you say your name is {name}? Yes or no?", "en")
+            TTS.speak(f"Did I understand that correctly? Your name is {name}?", "en")
 
         answer = _record_on_next_press(stt, button).lower()
 
@@ -105,9 +105,9 @@ def ask_user_name_with_confirmation(stt, button, lang):
             return name
 
         if lang == "de":
-            TTS.speak("Bitte sag deinen Namen erneut.", "de")
+            TTS.speak("Oh, das tut mir aber leid.", "de")
         else:
-            TTS.speak("Please say your name again.", "en")
+            TTS.speak("Oh, I am sorry about that.", "en")
 
 
 _PASSWORD_WORDS = {
@@ -147,20 +147,30 @@ def _parse_password(text: str) -> str:
 
 def ask_parent_password(stt, button, lang):
     if lang == "de":
-        TTS.speak("Bitte lege jetzt ein vierstelliges Eltern-Passwort fest.", "de")
+        TTS.speak("Der nächste Schritt ist für die Eltern gedacht. Bitte lege ein vier stelliges Elternpasswort fest.", "de")
     else:
-        TTS.speak("Please create a four digit parent password.", "en")
+        TTS.speak("The next step is for parents only. Please create a four digit parent password.", "en")
 
     while True:
         spoken = _record_on_next_press(stt, button)
         pw = _parse_password(spoken)
+
+        def spell_digits(pw: str) -> str:
+            return " ".join(list(pw))
+        
         if len(pw) == 4:
+            spoken_pw = spell_digits(pw)
+
+            if lang == "de":
+                TTS.speak(f"Dankeschön, dein Elternpasswort lautet {spoken_pw}.", "de")
+            else:
+                TTS.speak(f"Thank you, your parent password is {spoken_pw}.", "en")
             return pw
 
         if lang == "de":
-            TTS.speak("Bitte nochmal vier Ziffern.", "de")
+            TTS.speak("Bitte wiederhole das Elternpasswort. Nenne nur vier Zahlen.", "de")
         else:
-            TTS.speak("Please repeat exactly four digits.", "en")
+            TTS.speak("Please repeat your parent password. Name four digits only.", "en")
 
 
 def register_short_id(session_id: str, parent_password: str) -> str | None:
@@ -230,16 +240,16 @@ def run_initial_setup(button):
         if short_id:
             spelled = " ".join(list(short_id.upper()))
             if lang == "de":
-                TTS.speak(f"Dein Sitzungs-Code lautet: {spelled}.", "de")
+                TTS.speak(f"Dein Sitzungs-Code lautet: {spelled}. Ich wiederhole, dein Sitzungs-Code lautet: {spelled}.", "de")
             else:
-                TTS.speak(f"Your session code is: {spelled}.", "en")
+                TTS.speak(f"Your session code is: {spelled}. I repeat, your session code is: {spelled}.", "en")
 
         first = True
 
     if first:
         if lang == "de":
-            TTS.speak(f"{user_name}, du kannst jetzt sprechen.", "de")
+            TTS.speak(f"Danke {user_name}, du bist nun fertig und kannst mit mir reden.", "de")
         else:
-            TTS.speak(f"{user_name}, you can speak now.", "en")
+            TTS.speak(f"Thank you {user_name}, you are done and can chat with me now.", "en")
 
     return settings

@@ -12,7 +12,6 @@ from setup import run_initial_setup
 
 BUTTON_PIN = 17
 LLM_SERVER_URL = "http://192.168.2.31:5000/talk"
-LOG_PATH = "memory/conversation_log.txt"
 
 
 class Button:
@@ -107,12 +106,6 @@ def main():
 
                 reply = send_to_llm(text, lang, session_id, user_name)
                 TTS.speak(reply, lang)
-
-                with open(LOG_PATH, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({
-                        "user": user_name, "lang": lang,
-                        "input": text, "reply": reply
-                    }) + "\n")
 
             time.sleep(0.2)
 
