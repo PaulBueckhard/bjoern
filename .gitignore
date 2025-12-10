@@ -4,3 +4,4 @@ recordings.txt
 __pycache__/
 TTS_daemon.log
 memory/
+.pytest_cache/
