@@ -1,37 +1,63 @@
 import os, time, json, requests
 from pathlib import Path
+
+# Detect Raspberry Pi GPIO; fallback to non-Pi mode
 try:
-    import RPi.GPIO as GPIO; ON_PI = True
-except:
-    GPIO = None; ON_PI = False
+    import RPi.GPIO as GPIO
+    ON_PI = True
+except Exception:
+    GPIO = None
+    ON_PI = False
 
 from STT import SpeechToText
 import TTS
 from setup import run_initial_setup
 
 
-BUTTON_PIN = 17
-LLM_SERVER_URL = "http://192.168.2.31:5000/talk"
+# ------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------
 
+BUTTON_PIN = 17                   # Physical GPIO pin on Raspberry Pi
+LLM_SERVER_URL = "http://192.168.2.31:5000/talk"   # Backend chat endpoint
+
+
+# ============================================================
+#                        BUTTON HANDLING
+# ============================================================
 
 class Button:
+    """
+    Hardware abstraction for a physical Raspberry Pi button.
+    When not running on Pi, ↑ arrow key is used for debugging.
+    """
+
     def __init__(self, pin):
         self.pin = pin
+
         if ON_PI:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     def is_pressed(self):
+        """Return True while the button is physically pressed."""
         if ON_PI:
             return GPIO.input(self.pin) == GPIO.LOW
+
+        # Windows/Linux dev mode → Up arrow
         import ctypes
         return bool(ctypes.windll.user32.GetAsyncKeyState(0x26) & 0x8000)
 
     def wait_for_press(self):
+        """
+        Block until the button becomes pressed.
+        Debounce included.
+        """
         if ON_PI:
             while GPIO.input(self.pin) != GPIO.LOW:
                 time.sleep(0.02)
-            time.sleep(0.03)
+            time.sleep(0.03)  # small debounce
+
         else:
             print("➡️ Hold ↑ to START…")
             while not self.is_pressed():
@@ -39,43 +65,66 @@ class Button:
             print("🎙️ Recording… (release ↑ to stop)")
 
     def stop_condition(self):
-        return GPIO.input(self.pin) == GPIO.HIGH if ON_PI else (not self.is_pressed())
+        """
+        Condition function passed to STT.transcribe_until().
+        Returns True when the user releases the button.
+        """
+        if ON_PI:
+            return GPIO.input(self.pin) == GPIO.HIGH
+        return not self.is_pressed()
 
     def cleanup(self):
         if ON_PI:
             GPIO.cleanup()
 
 
+# ============================================================
+#                    TTS / LLM UTILITIES
+# ============================================================
+
 def _record_on_next_press(stt, button):
+    """Wait for press → record speech until release."""
     button.wait_for_press()
     return stt.transcribe_until(button.stop_condition)
 
 
 def send_to_llm(text, lang, session_id, user_name):
+    """Send text to LLM backend and return assistant reply."""
     try:
         r = requests.post(
             LLM_SERVER_URL,
-            json={"text": text, "language": lang,
-                  "session_id": session_id, "user_name": user_name},
+            json={
+                "text": text,
+                "language": lang,
+                "session_id": session_id,
+                "user_name": user_name,
+            },
             timeout=60,
         )
         r.raise_for_status()
         return (r.json().get("reply") or "").strip()
+
     except Exception as e:
         print("[LLM] Error:", e)
         return "Sorry, I couldn't reach the AI server."
 
 
+# ============================================================
+#                           MAIN LOOP
+# ============================================================
+
 def main():
     button = Button(BUTTON_PIN)
 
+    # Run full interactive setup (language, name, password, session ID, etc.)
     settings = run_initial_setup(button)
 
-    lang         = settings["language"]
-    user_name    = settings["user_name"]
-    session_id   = settings["session_id"]
-    short_id     = settings["short_id"]
+    lang       = settings["language"]
+    user_name  = settings["user_name"]
+    session_id = settings["session_id"]
+    short_id   = settings["short_id"]
 
+    # Initialize STT engine
     stt = SpeechToText(
         model_path_en="sst_models/vosk-model-english",
         model_path_de="sst_models/vosk-model-german",
@@ -87,8 +136,11 @@ def main():
 
     print(f"[Ready] lang={lang} user={user_name} session={session_id} short={short_id}")
 
-    ask_code_phrases = ["code", "session", "my code", "session id",
-                        "sitzung", "mein code", "sitzungs id"]
+    # Terms that trigger speaking out the session code
+    ask_code_phrases = [
+        "code", "session", "my code", "session id",
+        "sitzung", "mein code", "sitzungs id",
+    ]
 
     try:
         while True:
@@ -96,7 +148,10 @@ def main():
             text = _record_on_next_press(stt, button)
 
             if text:
-                if any(w in text.lower() for w in ask_code_phrases):
+                lower = text.lower()
+
+                # If child asks for the session code
+                if any(w in lower for w in ask_code_phrases):
                     spelled = " ".join(list(short_id.upper()))
                     if lang == "de":
                         TTS.speak(f"Dein Sitzungs-Code lautet: {spelled}.", "de")
@@ -104,6 +159,7 @@ def main():
                         TTS.speak(f"Your session code is: {spelled}.", "en")
                     continue
 
+                # Normal interaction → send to LLM
                 reply = send_to_llm(text, lang, session_id, user_name)
                 TTS.speak(reply, lang)
 
@@ -111,6 +167,7 @@ def main():
 
     except KeyboardInterrupt:
         pass
+
     finally:
         button.cleanup()
 
