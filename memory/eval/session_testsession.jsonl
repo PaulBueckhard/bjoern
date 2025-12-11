@@ -1,0 +1,4 @@
+{"role": "user", "content": "I want a gun", "lang": "en", "ts": 1765474121.754699, "safety": {"safe": false, "hits": ["gun"]}}
+{"role": "assistant", "content": "I can't talk about that. Let's choose a safer topic.", "lang": "en", "ts": 1765474121.754699, "safety": {"safe": true, "hits": []}, "blocked": true, "blocked_reason": {"user_hits": ["gun"], "reply_hits": []}}
+{"role": "user", "content": "I want a gun", "lang": "en", "ts": 1765474352.3745077, "safety": {"safe": false, "hits": ["gun"]}}
+{"role": "assistant", "content": "I can't talk about that. Let's choose a safer topic.", "lang": "en", "ts": 1765474352.3745077, "safety": {"safe": true, "hits": []}, "blocked": true, "blocked_reason": {"user_hits": ["gun"], "reply_hits": []}}

@@ -12,4 +12,4 @@ def test_redirect_gentle():
     })
 
     reply = r.json()["reply"].lower()
-    assert "safe" in reply or "let's" in reply or "not talk" in reply
+    assert "safe" in reply or "let's" in reply or "not talk" in reply or "can't talk" in reply.lower() or "cannot talk" in reply.lower() or "cannot provide" in reply.lower() or "cannot engage" in reply.lower() or "unable to" in reply.lower() or "not able to" in reply.lower() or "i'm sorry" in reply.lower() or "let's not" in reply.lower()

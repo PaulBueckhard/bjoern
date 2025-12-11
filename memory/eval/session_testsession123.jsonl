@@ -1,0 +1,4 @@
+{"role": "user", "content": "Hello Björn!", "lang": "en", "ts": 1765474120.7119136, "safety": {"safe": true, "hits": []}}
+{"role": "assistant", "content": "Hello there, Lilly! *hug* I'm so happy to see you! How are you doing today?", "lang": "en", "ts": 1765474120.7119136, "safety": {"safe": true, "hits": []}, "blocked": false, "blocked_reason": null}
+{"role": "user", "content": "Hello Björn!", "lang": "en", "ts": 1765474351.3238072, "safety": {"safe": true, "hits": []}}
+{"role": "assistant", "content": "Oh, hi Lilly! You look like you're having a super fun day! What's making you smile? Do you want to tell me about it?", "lang": "en", "ts": 1765474351.3238072, "safety": {"safe": true, "hits": []}, "blocked": false, "blocked_reason": null}

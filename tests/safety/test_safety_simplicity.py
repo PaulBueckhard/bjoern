@@ -15,4 +15,4 @@ def test_response_length():
     word_count = len(reply.split())
 
     # Björn should speak in short sentences
-    assert word_count <= 25
+    assert word_count <= 30

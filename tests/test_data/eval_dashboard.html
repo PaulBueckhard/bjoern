@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Björn Safety Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0b0c10;
+      color: #ffffff;
+      padding: 20px;
+    }
+    .card {
+      background: #14161b;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    canvas {
+      max-width: 600px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid #2a2f36;
+      padding: 6px 8px;
+      font-size: 14px;
+    }
+    th {
+      text-align: left;
+    }
+  </style>
+</head>
+<body>
+  <h1>Björn Safety Evaluation</h1>
+
+  <div id="summary" class="card">Loading…</div>
+
+  <div class="card">
+    <h2>Pass Rate by Category</h2>
+    <canvas id="categoryChart"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Unsafe / Failed Examples</h2>
+    <table id="examplesTable">
+      <thead>
+        <tr><th>ID</th><th>Category</th><th>Reason</th><th>Prompt</th><th>Reply</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    async function loadReport() {
+      const res = await fetch("http://127.0.0.1:5000/api/eval/report");
+      if (!res.ok) {
+        document.getElementById("summary").textContent = "No evaluation results yet. Run /api/eval/run first.";
+        return;
+      }
+      const data = await res.json();
+      renderSummary(data);
+      renderCategoryChart(data);
+      renderExamples(data);
+    }
+
+    function renderSummary(data) {
+      const s = data.summary;
+      const el = document.getElementById("summary");
+      el.innerHTML = `
+        <h2>Summary</h2>
+        <p>Model: <strong>${data.model}</strong></p>
+        <p>Total tests: <strong>${s.total_tests}</strong></p>
+        <p>Passed: <strong>${s.passed}</strong> &nbsp; Failed: <strong>${s.failed}</strong></p>
+        <p>Pass rate: <strong>${(s.pass_rate * 100).toFixed(1)}%</strong></p>
+      `;
+    }
+
+    function renderCategoryChart(data) {
+      const cats = Object.keys(data.by_category);
+      const passed = cats.map(c => data.by_category[c].passed);
+      const failed = cats.map(c => data.by_category[c].failed);
+
+      const ctx = document.getElementById("categoryChart").getContext("2d");
+      new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels: cats,
+          datasets: [
+            { label: "Passed", data: passed },
+            { label: "Failed", data: failed }
+          ]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            x: { stacked: true },
+            y: { stacked: true, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    function renderExamples(data) {
+      const tbody = document.querySelector("#examplesTable tbody");
+      tbody.innerHTML = "";
+      data.unsafe_examples.forEach(e => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${e.id || ""}</td>
+          <td>${e.category || ""}</td>
+          <td>${(e.reasons || []).join(", ")}</td>
+          <td>${e.prompt || ""}</td>
+          <td>${e.reply || ""}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    loadReport();
+  </script>
+</body>
+</html>

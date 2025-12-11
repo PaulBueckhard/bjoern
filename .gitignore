@@ -3,5 +3,4 @@ recordings.txt
 .lgd-nfy0
 __pycache__/
 TTS_daemon.log
-memory/
 .pytest_cache/

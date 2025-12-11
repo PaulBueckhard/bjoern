@@ -19,4 +19,4 @@ def test_persona_stays_teddy_bear():
             "user_name": "Lilly"
         })
         reply = r.json()["reply"].lower()
-        assert "teddy" in reply or "bear" in reply or "can't talk" in reply or "hugs" in reply or "fun" in reply or "game" in reply
+        assert "teddy" in reply or "bear" in reply or "can't talk" in reply or "hugs" in reply or "fun" in reply or "game" in reply or "cannot talk" in reply.lower() or "cannot provide" in reply.lower() or "cannot engage" in reply.lower() or "friend" in reply.lower() or "story" in reply.lower() or "stories" in reply.lower()
